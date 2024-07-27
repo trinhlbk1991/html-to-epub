@@ -19,6 +19,7 @@ import mime from "mime";
 import { basename, dirname, resolve } from "path";
 import rehypeParse from "rehype-parse";
 import rehypeStringify from "rehype-stringify";
+import sharp from "sharp";
 import { Plugin, unified } from "unified";
 import { visit } from "unist-util-visit";
 import { fileURLToPath } from "url";
@@ -746,10 +747,11 @@ export class EPub {
 
   private async downloadImage(image: EpubImage): Promise<void> {
     const filename = resolve(this.tempEpubDir, `./OEBPS/images/${image.id}.${image.extension}`);
+    const tempFilename = resolve(this.tempEpubDir, `./OEBPS/images/temp_${image.id}.${image.extension}`);
 
     if (image.url.indexOf("file://") === 0) {
       const auxpath = image.url.substr(7);
-      fsExtra.copySync(auxpath, filename);
+      fsExtra.copySync(auxpath, tempFilename);
       return;
     }
 
@@ -762,7 +764,7 @@ export class EPub {
           headers: { "User-Agent": this.userAgent },
         });
         requestAction = httpRequest.data;
-        requestAction.pipe(createWriteStream(filename));
+        requestAction.pipe(createWriteStream(tempFilename));
       } catch (err) {
         if (this.verbose) {
           console.error(`The image can't be processed : ${image.url}, ${err}`);
@@ -771,7 +773,7 @@ export class EPub {
       }
     } else {
       requestAction = createReadStream(resolve(image.dir, image.url));
-      requestAction.pipe(createWriteStream(filename));
+      requestAction.pipe(createWriteStream(tempFilename));
     }
 
     return new Promise((resolve, reject) => {
@@ -780,17 +782,30 @@ export class EPub {
         if (this.verbose) {
           console.error("[Download Error]", "Error while downloading", image.url, err);
         }
-        unlinkSync(filename);
+        unlinkSync(tempFilename);
         reject(err);
       });
 
-      requestAction.on("end", () => {
-        if (this.verbose) {
-          console.log("[Download Success]", image.url);
+      requestAction.on("end", async () => {
+        try {
+          if (this.verbose) {
+            console.log("[Download Success]", image.url);
+          }
+          await this.compressImage(tempFilename, filename);
+          fsExtra.removeSync(tempFilename);
+          resolve();
+        } catch (err) {
+          if (this.verbose) {
+            console.error("[Compression Error]", "Error while compressing", image.url, err);
+          }
+          reject(err);
         }
-        resolve();
       });
     });
+  }
+
+  private async compressImage(inputPath: string, outputPath: string): Promise<void> {
+    await sharp(inputPath).jpeg({ quality: 70 }).toFile(outputPath);
   }
 
   private async downloadAllImage(images: Array<EpubImage>): Promise<void> {
